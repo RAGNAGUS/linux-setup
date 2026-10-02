@@ -340,3 +340,55 @@ HTTP_ADDR = 127.0.0.1
 HTTP_PORT = 3000
 ```
 
+บันทึกด้วย **Ctrl+O → Enter** แล้วออกด้วย **Ctrl+X  **จากนั้นรัน:
+
+```
+systemctl restart gitea
+systemctl status gitea --no-pager -l
+```
+
+ขั้นต่อไป บน **Windows** เปิด
+
+```
+https://git.mendoka.com
+```
+
+ตอนนี้ Git ก็พร้อมใช้แล้ว ต่อไปเริ่มจาก **ตรวจต่ออายุ HTTPS อัตโนมัติ** ก่อน ใน SSH ของ VPS รัน
+
+```
+systemctl status certbot.timer --no-pager
+```
+
+แล้วทดสอบกระบวนการต่ออายุ:
+
+```
+certbot renew --dry-run
+```
+
+หากผ่านควรเห็นข้อความประมาณ
+
+```
+Congratulations, all simulated renewals succeeded
+```
+
+ต่อไป **ตรวจระบบอัปเดตอัตโนมัติของ Ubuntu** ก่อนเปลี่ยนค่าใด ๆ รันทีละคำสั่งใน SSH:
+
+```
+systemctl status apt-daily-upgrade.timer --no-pager
+cat /etc/apt/apt.conf.d/20auto-upgrades
+apt list --upgradable
+apt update
+apt upgrade
+reboot
+```
+
+```
+ssh root@git.mendoka.com
+```
+
+```
+uname -r
+systemctl is-active gitea nginx
+```
+
+ควรเห็น kernel `7.0.0-38-generic` และ `active` สองบรรทัด จากนั้นลองเปิด https://git.mendoka.com
