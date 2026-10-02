@@ -518,3 +518,134 @@ git add .gitattributes
 - [GitHub Desktop: เพิ่ม repo รวมถึง repo นอก GitHub](https://docs.github.com/en/desktop/adding-and-cloning-repositories)
 
 คู่มือนี้ตรวจคำสั่งและลำดับกับเอกสารทางการและผลการติดตั้งในเซสชันต้นทาง ไม่ได้ทดสอบติดตั้งใหม่ครบทุกขั้นบน VPS ของทุกทีม ต้องตรวจสถาปัตยกรรม เวอร์ชัน พอร์ต และ policy จริงก่อนใช้งาน
+
+
+## 14. ตั้ง Firewall ด้วย UFW
+
+ขั้นนี้ทำบน **VPS ผ่าน SSH** ด้วย root หรือ root shell จาก `sudo -i` ใช้กับ Gitea แบบ binary และ Nginx ตามคู่มือนี้ ไม่ได้เปลี่ยนค่า SSH login หรือสร้าง SSH key
+
+ตัวอย่างใช้ `git.example.com` และ SSH พอร์ต 22 ต้องแทนโดเมนและพอร์ตด้วยค่าจริง **เปิด SSH หน้าต่างเดิมค้างไว้ตลอด** จนทดสอบการเข้าใหม่ผ่าน และเตรียม Console ของผู้ให้บริการไว้สำหรับกู้คืน
+
+### 14.1 ตรวจสถานะและพอร์ตจริงก่อน
+
+```bash
+ufw status verbose
+sshd -T | grep '^port '
+ss -lntp
+```
+
+ถ้าไม่มี UFW ให้ติดตั้งแล้วตรวจใหม่:
+
+```bash
+apt update
+apt install -y ufw
+ufw status verbose
+```
+
+ค่าที่คาดสำหรับการติดตั้งนี้:
+
+| พอร์ต | การใช้งาน / การรับการเชื่อมต่อ |
+| --- | --- |
+| TCP 22 | SSH ต้องตรวจว่าตรงกับพอร์ตที่ใช้เข้าจริง |
+| TCP 80 | Nginx, redirect ไป HTTPS และ HTTP challenge สำหรับต่ออายุใบรับรอง |
+| TCP 443 | HTTPS ของ Gitea รวม HTTPS push/pull และ Git LFS |
+| TCP 3000 | Gitea ควรฟังเฉพาะ `127.0.0.1:3000` ไม่เปิดสู่อินเทอร์เน็ต |
+
+ใช้ `ss -lntp` ยืนยันพอร์ตที่ฟังจริงด้วย เพราะ SSH socket activation หรือการตั้งค่าของผู้ให้บริการอาจต่างจาก `sshd -T` หากมี service อื่นหรือกฎ firewall เดิม ให้ตรวจความจำเป็นก่อนเปลี่ยน default policy ไม่ใช้ `ufw reset` กับเครื่องที่มี config เดิม
+
+### 14.2 เพิ่มกฎก่อนเปิด Firewall
+
+สำหรับ VPS ใหม่ตามคู่มือนี้ ซึ่ง SSH ใช้ TCP 22:
+
+```bash
+ufw allow 22/tcp comment 'SSH'
+ufw allow 80/tcp comment 'HTTP and certificate renewal'
+ufw allow 443/tcp comment 'HTTPS Gitea'
+ufw default deny incoming
+ufw default allow outgoing
+ufw show added
+```
+
+ตรวจว่ามีกฎ allow ทั้งสามพอร์ต **ก่อน** เปิด UFW หาก SSH ใช้พอร์ตอื่น ให้เพิ่มพอร์ตจริงแทน 22 ก่อนทำต่อ อย่าจำกัด SSH ตาม IP จนกว่าจะตรวจว่า IP ต้นทางคงที่และมีทางกู้คืน
+
+ไม่เพิ่ม allow 3000 และไม่ต้องเปิดพอร์ตฐานข้อมูลสำหรับ SQLite การ allow outgoing ช่วยให้ VPS ดาวน์โหลดแพ็กเกจ ติดต่อ DNS และ Let's Encrypt ได้ ส่วน loopback และ traffic ของการเชื่อมต่อที่ตั้งไว้แล้วมีการจัดการในกฎพื้นฐานของ UFW
+
+ตรวจ IPv6 ก่อนเปิด:
+
+```bash
+grep '^IPV6=' /etc/default/ufw
+```
+
+หาก VPS มี IPv6 ให้ใช้ `IPV6=yes` เพื่อให้ UFW จัดการทั้ง IPv4/IPv6 อย่าปล่อยช่องทาง IPv6 โดยไม่ได้ตรวจ กฎเดียวกันโดยทั่วไปจะแสดงรายการ `(v6)` ด้วยเมื่อเปิดการรองรับ IPv6
+
+### 14.3 เปิดและตรวจผล
+
+เมื่อยืนยันพอร์ต SSH และกฎแล้วจึงรัน:
+
+```bash
+ufw enable
+```
+
+หากถาม `Command may disrupt existing ssh connections. Proceed with operation (y|n)?` ให้ตอบ `y` หลังตรวจว่าพอร์ต SSH จริงได้รับอนุญาตแล้ว จากนั้น:
+
+```bash
+ufw status verbose
+```
+
+ควรเห็น `Status: active`, default incoming เป็น deny และ outgoing เป็น allow พร้อม allow TCP 22/80/443 ตามพอร์ตจริง ตรวจทั้ง IPv4 และ IPv6 ถ้ามี หากมีกฎ allow กว้างจากการตั้งค่าเก่า การเปิด UFW ไม่ได้ลบกฎเหล่านั้นให้เอง ต้องตรวจเพิ่ม
+
+UFW จะเปิดตามการบูตหลัง enable ไม่ต้องเพิ่มคำสั่งเปิดใหม่ทุกครั้ง
+
+### 14.4 ทดสอบจาก Windows อีกหน้าต่าง
+
+ยังไม่ปิด SSH เดิม เปิด **PowerShell หน้าต่างใหม่บน Windows**:
+
+```powershell
+ssh root@git.example.com
+```
+
+ถ้าพอร์ต SSH ไม่ใช่ 22 ให้ใช้ `ssh -p YOUR_SSH_PORT root@git.example.com` โดยแทน `YOUR_SSH_PORT` ด้วยเลขจริง ต้องล็อกอินจนได้ shell ไม่ใช่เพียงตรวจว่า TCP เชื่อมต่อได้
+
+ตรวจพอร์ตเว็บจาก Windows:
+
+```powershell
+Test-NetConnection git.example.com -Port 80
+Test-NetConnection git.example.com -Port 443
+```
+
+ทั้งสองควรได้ `TcpTestSucceeded : True` เปิด `https://git.example.com/` และทดสอบล็อกอิน, fetch/pull/push จาก client หากยังไม่ตั้ง repo ให้ทดสอบเว็บก่อนและทำการทดสอบ Git เมื่อมี repo
+
+บน VPS ทดสอบว่าการต่ออายุใบรับรองยังทำงานหลังเปิด firewall:
+
+```bash
+certbot renew --dry-run
+```
+
+เมื่อ SSH ใหม่ เว็บ และงาน Git ที่ใช้ทดสอบผ่านแล้ว จึงปิด SSH เก่าได้ UFW เปิดพอร์ตบนเครื่องเท่านั้น หากผู้ให้บริการมี network firewall อีกชั้น ต้องอนุญาตพอร์ตเดียวกันที่ชั้นนั้นด้วย
+
+### 14.5 กู้คืนเมื่อเข้าถึงไม่ได้
+
+หาก SSH ใหม่เข้าไม่ได้แต่หน้าต่างเดิมยังใช้งานได้ ให้ปิด UFW ชั่วคราวจากหน้าต่างเดิม:
+
+```bash
+ufw disable
+```
+
+ตรวจพอร์ตจริงและกฎ แก้ให้ถูกแล้วทดสอบใหม่ หากทุก SSH หลุด ให้ใช้ **Console ของผู้ให้บริการ** เข้าเครื่องและรันคำสั่งนี้ การ disable เป็นขั้นกู้คืนชั่วคราว ไม่ใช่การตั้งค่าถาวร
+
+หาก SSH เข้าได้แต่เว็บเข้าไม่ได้ ให้ตรวจ DNS, firewall ของผู้ให้บริการ, `ufw status verbose` และบริการ:
+
+```bash
+systemctl is-active gitea nginx
+nginx -t
+```
+
+อย่าเปิดพอร์ต 3000 เพื่อแก้ปัญหาเว็บ เพราะโครงสร้างนี้ให้ทีมเชื่อมต่อผ่าน Nginx ที่ 443
+
+### ข้อจำกัดของ Firewall
+
+กฎนี้ลดพอร์ตที่เข้าถึงได้ แต่ **ไม่ได้ป้องกันการเดารหัสบน SSH พอร์ตที่อนุญาต** และไม่ได้แทนที่การอัปเดตระบบ, SSH key/Fail2ban, 2FA หรือ backup หากใช้ root/password ต่อ ต้องดูแลความเสี่ยงนั้นแยกต่างหาก
+
+ถ้าเปลี่ยนไปใช้ Docker ภายหลัง ต้องตรวจ port publishing และกฎของ Docker ใหม่ เพราะ traffic ไปพอร์ตที่ Docker publish อาจไม่ผ่านกฎ UFW ตามที่คาดไว้ คู่มือส่วนนี้ใช้กับบริการ binary บน host
+
+อ้างอิง: [Ubuntu Server — Firewall และ UFW](https://documentation.ubuntu.com/server/how-to/security/firewalls/)
