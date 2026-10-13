@@ -23,7 +23,7 @@
 
 ต้องมีสิทธิ์จัดการ DNS ของโดเมน และเข้าถึงพอร์ต 80/443 จากอินเทอร์เน็ตเพื่อใช้วิธีออกใบรับรองในคู่มือนี้ พอร์ต SSH ตัวอย่างคือ 22 หากใช้พอร์ตอื่นต้องปรับคำสั่ง SSH และกฎ firewall ตามจริง
 
-คู่มือนี้ **ยังไม่ครอบคลุมการสร้าง SSH key, ปิด root login หรือกำหนด fail2ban** ให้ทำเป็นขั้นดูแล SSH แยกต่างหากหลังทดสอบการเข้าถึง วิธีนี้ไม่ควรถูกตีความว่าระบบได้รับการตรวจความปลอดภัยครบแล้ว
+คู่มือนี้ **ไม่ครอบคลุมการล็อกอินผู้ดูแลด้วย SSH key การปิดล็อกอินด้วยรหัสผ่าน และ fail2ban** ให้ทำตาม `SSHKeyLogin.md` แยกต่างหากหลังทดสอบการเข้าถึง วิธีนี้ไม่ควรถูกตีความว่าระบบได้รับการตรวจความปลอดภัยครบแล้ว การใช้ SSH key กับ Git (push/pull และระบบ build อัตโนมัติ) อยู่ในข้อ 15
 
 > สำหรับเซิร์ฟเวอร์ที่มี Gitea หรือเว็บไซต์เดิมอยู่แล้ว อย่ารันขั้นสร้างไฟล์ซ้ำ: `cat >` จะเขียนทับไฟล์เดิม ต้องตรวจและสำรองก่อน ห้ามนำคู่มือติดตั้งใหม่ไปใช้แทนขั้นอัปเกรด
 
@@ -649,3 +649,260 @@ nginx -t
 ถ้าเปลี่ยนไปใช้ Docker ภายหลัง ต้องตรวจ port publishing และกฎของ Docker ใหม่ เพราะ traffic ไปพอร์ตที่ Docker publish อาจไม่ผ่านกฎ UFW ตามที่คาดไว้ คู่มือส่วนนี้ใช้กับบริการ binary บน host
 
 อ้างอิง: [Ubuntu Server — Firewall และ UFW](https://documentation.ubuntu.com/server/how-to/security/firewalls/)
+
+
+## 15. ใช้ Git ผ่าน SSH key
+
+ขั้นนี้ทำให้สมาชิกทีมและระบบอัตโนมัติ (เช่น ระบบ build บนคลาวด์ Codemagic หรือเครื่องเซิร์ฟเวอร์ที่ต้องดึงโค้ด) push/pull ผ่าน SSH ได้ โดยไม่ต้องใส่รหัสผ่านหรือ token ทุกครั้ง ใช้กับ Gitea แบบ binary ตามคู่มือนี้ ซึ่งใช้ **SSH ของเครื่องเอง (OpenSSH) ที่พอร์ต 22** ไม่ต้องเปิดพอร์ตเพิ่ม
+
+**หลักการ:**
+
+- เมื่อเพิ่ม public key ในหน้าเว็บ Gitea ตัว Gitea จะเขียน key นั้นลง `/home/git/.ssh/authorized_keys` ของ Linux user `git` ให้เอง
+- key ทุกตัวถูกจำกัดด้วย `command=` ให้รันได้เฉพาะคำสั่ง Git ของ Gitea เข้าเครื่องเป็น shell ไม่ได้
+- ทุกคนเชื่อมต่อในชื่อ user `git` (`git@git.example.com`) Gitea แยกว่าเป็นใครจาก key ที่ใช้
+
+**มี key สองแบบ เลือกให้ตรงงาน:**
+
+| แบบ | เพิ่มที่ไหน | ใช้กับ |
+| --- | --- | --- |
+| **SSH key ส่วนตัว** | รูปโปรไฟล์ → Settings → SSH / GPG Keys | สมาชิกแต่ละคน มีสิทธิ์เท่ากับบัญชี Gitea ของเจ้าของ |
+| **Deploy key** | หน้า repo → Settings → Deploy Keys | ระบบอัตโนมัติ ใช้ได้กับ repo เดียว เลือกได้ว่าอ่านอย่างเดียวหรือเขียนได้ |
+
+ห้ามใช้ key ส่วนตัวของคนในทีมกับระบบอัตโนมัติ ให้สร้าง key แยกต่อระบบเสมอ เวลาจะยกเลิกจะได้ลบเฉพาะตัวนั้น
+
+### 15.1 ตรวจค่า SSH ของ Gitea (VPS)
+
+ไม่แก้อะไร แค่ดู:
+
+```bash
+grep -nE '^\s*(DISABLE_SSH|START_SSH_SERVER|SSH_PORT|SSH_DOMAIN)' /etc/gitea/app.ini
+```
+
+ค่าที่ต้องเป็น:
+
+| ค่า | ต้องเป็น | ความหมาย |
+| --- | --- | --- |
+| `DISABLE_SSH` | `false` หรือไม่มีบรรทัดนี้ | เปิดใช้ SSH |
+| `START_SSH_SERVER` | `false` หรือไม่มีบรรทัดนี้ | ใช้ SSH ของเครื่อง ไม่ใช่ SSH ในตัว Gitea |
+| `SSH_PORT` | พอร์ต SSH จริงของเครื่อง (`22`) | ใช้สร้าง URL clone ให้ถูก |
+| `SSH_DOMAIN` | โดเมนของ Gitea เช่น `git.example.com` | ใช้สร้าง URL clone ให้ถูก |
+
+หากค่าไม่ตรง ให้สำรอง `app.ini` ก่อน แก้เฉพาะบรรทัดนั้นใน `[server]` แล้ว `systemctl restart gitea` ตามวิธีในข้อ 11
+
+### 15.2 ตรวจว่า SSH ของเครื่องรับ key ของ user `git` (VPS)
+
+```bash
+sshd -T | grep -E '^(allowusers|denyusers|pubkeyauthentication)'
+```
+
+- ต้องมี `pubkeyauthentication yes`
+- ถ้ามี `allowusers` ต้องมี `git` อยู่ในรายการ ถ้าไม่มีบรรทัด `allowusers` เลยถือว่าใช้ได้
+- ต้องไม่มี `git` อยู่ใน `denyusers`
+
+ถ้าในอนาคตเพิ่ม `AllowUsers` ใน `/etc/ssh/sshd_config` (เช่น ตอนทำขั้นป้องกัน SSH) ต้องใส่ `git` ด้วยเสมอ ไม่เช่นนั้น Git ผ่าน SSH ของทุกคนจะใช้ไม่ได้
+
+### 15.3 สร้าง SSH key บน Windows
+
+ทำบน **เครื่อง Windows ของคนที่จะใช้ key** ไม่ใช่บน VPS
+
+**Windows PowerShell:**
+
+```powershell
+cd $HOME\.ssh
+```
+
+ถ้าขึ้นว่าไม่มีโฟลเดอร์ ให้สร้างแล้ว `cd` ใหม่:
+
+```powershell
+mkdir $HOME\.ssh
+```
+
+สร้าง key แบบ ed25519 ตั้งชื่อไฟล์และคำอธิบายให้รู้ว่าเป็นของใคร/ระบบไหน:
+
+```powershell
+ssh-keygen -t ed25519 -C "ชื่อ-หรือ-ระบบ" -f ชื่อไฟล์key
+```
+
+ตัวอย่าง key ส่วนตัว: `ssh-keygen -t ed25519 -C "somchai-laptop" -f gitea_somchai`
+ตัวอย่าง key ของระบบอัตโนมัติ: `ssh-keygen -t ed25519 -C "codemagic-YOUR_REPO" -f codemagic_YOUR_REPO`
+
+- **key ส่วนตัว:** ควรตั้ง passphrase
+- **key ของระบบอัตโนมัติ:** กด Enter ผ่านทั้งสองครั้ง (ไม่ตั้ง passphrase) เพราะระบบพิมพ์รหัสเองไม่ได้
+- ถ้าถาม `Overwrite (y/n)?` แปลว่ามีไฟล์ชื่อนี้แล้ว ตอบ `n` แล้วเปลี่ยนชื่อไฟล์ อย่าเขียนทับ key ที่ใช้อยู่
+
+ได้สองไฟล์:
+
+| ไฟล์ | คืออะไร | เอาไปไหน |
+| --- | --- | --- |
+| `ชื่อไฟล์key.pub` | public key เปิดเผยได้ | ใส่ใน Gitea |
+| `ชื่อไฟล์key` (ไม่มี `.pub`) | **private key ห้ามส่งให้ใคร** | อยู่ในเครื่องเจ้าของ หรือใส่ในระบบอัตโนมัติที่ใช้ key นั้นเท่านั้น |
+
+ดู public key เพื่อคัดลอก:
+
+```powershell
+Get-Content ชื่อไฟล์key.pub
+```
+
+ได้ข้อความบรรทัดเดียว ขึ้นต้น `ssh-ed25519` ให้คัดลอกทั้งบรรทัด
+
+### 15.4 เพิ่ม public key ใน Gitea
+
+**key ส่วนตัว:**
+
+1. เปิด Gitea ด้วยบัญชีของตัวเอง → รูปโปรไฟล์มุมขวาบน → **Settings** → **SSH / GPG Keys**
+2. **Add Key** → ตั้งชื่อ เช่น `somchai-laptop` → วาง public key → **Add Key**
+
+**Deploy key (ระบบอัตโนมัติ):**
+
+1. เปิด repo → **Settings** → **Deploy Keys** → **Add Deploy Key**
+2. ตั้งชื่อ เช่น `codemagic` → วาง public key
+3. **ไม่ติ๊ก Enable Write Access** ถ้าระบบแค่ดึงโค้ด ติ๊กเฉพาะเมื่อระบบต้อง push จริง
+
+key หนึ่งตัวใช้เป็นได้แบบเดียว: เป็น key ส่วนตัวแล้วเอาไปเป็น deploy key ไม่ได้ และกลับกันก็ไม่ได้
+
+### 15.5 ทดสอบการล็อกอิน
+
+**Windows PowerShell** (ในโฟลเดอร์ `$HOME\.ssh`):
+
+```powershell
+ssh -i ชื่อไฟล์key -T git@git.example.com
+```
+
+- ครั้งแรกจะถามยืนยัน host key ให้ตรวจ fingerprint เทียบกับเครื่องจริงก่อนตอบ `yes`
+- **สำเร็จ:** ข้อความว่าไม่มี shell เป็นเรื่องปกติ
+  - key ส่วนตัวจะขึ้นทำนอง `Hi there, ชื่อบัญชี! You've successfully authenticated with the key named ...`
+  - deploy key จะขึ้น `Hi there! You've successfully authenticated with an SSH deploy key.`
+  - ทั้งสองแบบตามด้วย `Gitea does not provide shell access.`
+
+ถ้าไม่สำเร็จ:
+
+| อาการ | สาเหตุที่พบบ่อย |
+| --- | --- |
+| `Permission denied (publickey)` | Gitea ยังไม่เขียน key ลงเครื่อง หรือสิทธิ์ไฟล์ผิด ดูขั้นตรวจบน VPS ด้านล่าง |
+| ถามรหัสผ่านของ `git@...` | เลือกไฟล์ key ผิด หรือ SSH ไม่รับ key ของ user `git` (ดูข้อ 15.2) |
+| `Connection refused` / timeout | firewall หรือพอร์ต SSH ไม่ใช่ 22 |
+
+ตรวจบน **VPS**:
+
+```bash
+ls -la /home/git/.ssh/
+head -c 200 /home/git/.ssh/authorized_keys
+journalctl -u ssh -n 30 --no-pager
+```
+
+- โฟลเดอร์ `.ssh` ต้องเป็นของ `git` สิทธิ์ `drwx------` (700)
+- `authorized_keys` ต้องเป็นของ `git` สิทธิ์ `-rw-------` (600)
+- ในไฟล์ต้องเห็นบรรทัดขึ้นต้นด้วย `command="/usr/local/bin/gitea ...`
+
+ถ้าไฟล์ไม่มีหรือว่าง ให้ Gitea เขียนใหม่จาก key ทั้งหมดในระบบ:
+
+```bash
+sudo -u git /usr/local/bin/gitea admin regenerate keys --config /etc/gitea/app.ini
+```
+
+**ห้ามแก้ `authorized_keys` ด้วยมือ:** Gitea จะเขียนทับ ให้เพิ่ม/ลบ key ผ่านหน้าเว็บเท่านั้น
+
+### 15.6 ใช้ URL แบบ SSH
+
+คัดลอก URL จากปุ่ม **SSH** บนหน้า repo จะได้รูปแบบ:
+
+```text
+git@git.example.com:YOUR_ORG/YOUR_REPO.git
+```
+
+**clone ใหม่ด้วย key ส่วนตัว:** ตั้งให้ SSH รู้ว่าใช้ key ไหนกับโดเมนนี้ เพิ่มลงไฟล์ `$HOME\.ssh\config` บน Windows (สร้างไฟล์ถ้ายังไม่มี):
+
+```text
+Host git.example.com
+    User git
+    IdentityFile ~/.ssh/ชื่อไฟล์key
+    IdentitiesOnly yes
+```
+
+แล้ว clone:
+
+```powershell
+git clone git@git.example.com:YOUR_ORG/YOUR_REPO.git
+```
+
+**เปลี่ยน repo เดิมที่ใช้ HTTPS มาเป็น SSH** (ใน terminal ของ local repo):
+
+```powershell
+git remote set-url origin git@git.example.com:YOUR_ORG/YOUR_REPO.git
+git remote -v
+git fetch
+```
+
+**ระบบอัตโนมัติ:** ถ้าระบบให้อัปโหลด SSH key ได้ ใส่ URL แบบ SSH ข้างบนและไฟล์ **private key** ของ deploy key นั้น ถ้าระบบรับแค่ username/password (เช่น หน้า Add URL manually ของ Codemagic) ให้ใช้ข้อ 15.9 แทน
+
+### 15.7 ดูแล key
+
+- **คนออกหรือเครื่องหาย:** ลบ key ของคนนั้นหรือเครื่องนั้นในหน้า SSH / GPG Keys ทันที
+- **เลิกใช้ระบบอัตโนมัติ:** ลบ deploy key ของระบบนั้นในหน้า repo
+- **เก็บ private key ของระบบอัตโนมัติ:** เก็บใน password manager ของบริษัท แล้วลบไฟล์ในเครื่องที่ใช้สร้าง
+- **ไม่ต้องเปิดพอร์ตเพิ่ม:** SSH ของ Git ใช้พอร์ต 22 เดียวกับที่ผู้ดูแลใช้เข้าเครื่อง
+
+ขั้นป้องกัน SSH ของผู้ดูแล (ใช้ key กับ root, ปิดล็อกอินด้วยรหัสผ่าน, fail2ban ตาม `SSHKeyLogin.md`) ทำได้โดยไม่กระทบ Git ผ่าน SSH เพราะ user `git` ใช้ key อยู่แล้ว แต่ต้องทดสอบข้อ 15.5 ให้ผ่านก่อน และถ้าตั้ง `AllowUsers` ต้องใส่ `git` ด้วย (ข้อ 15.2)
+
+### 15.8 สร้าง key ใหม่ และใช้ key กับหลายโปรเจกต์
+
+**สร้างใหม่ได้ไม่จำกัด:** key เป็นแค่ไฟล์คู่หนึ่ง สร้างกี่คู่ก็ได้ ไม่มีค่าใช้จ่าย ทำกุญแจลับหาย ลืมไว้ที่ไหน หรือสงสัยว่าหลุด ให้ลบ key นั้นใน Gitea ทันทีแล้วสร้างใหม่
+
+**เปลี่ยน key โดยระบบไม่สะดุด:**
+
+1. สร้าง key ใหม่ตามข้อ 15.3 (ตั้งชื่อไฟล์ใหม่ อย่าเขียนทับไฟล์เดิม)
+2. เพิ่ม public key ใหม่ใน Gitea ตามข้อ 15.4 ตอนนี้ key เก่ายังใช้ได้อยู่
+3. ทดสอบ key ใหม่ตามข้อ 15.5
+4. เปลี่ยนกุญแจลับในเครื่องหรือระบบที่ใช้ (เช่น อัปโหลดใน Codemagic ใหม่) แล้วทดสอบว่าระบบนั้นยังดึงโค้ดได้
+5. ลบ key เก่าใน Gitea แล้วลบไฟล์ key เก่า
+
+**หนึ่ง key ต่อหนึ่งงาน ต่อหนึ่งโปรเจกต์:** ไม่ใช้ key เดียวร่วมกันหลายโปรเจกต์หรือหลายระบบ แม้จะทำได้ในทางเทคนิค
+
+| | key เดียวใช้ทุกโปรเจกต์ | key แยกต่อโปรเจกต์ (ใช้แบบนี้) |
+| --- | --- | --- |
+| key หลุด | เข้าถึงได้ทุก repo ที่ใช้ key นั้น | เข้าถึงได้ repo เดียว |
+| เลิกใช้กับโปรเจกต์หนึ่ง | ลบ key แล้วโปรเจกต์อื่นพังด้วย | ลบเฉพาะของโปรเจกต์นั้น |
+| ตรวจย้อนหลังว่าใครเข้าอะไร | แยกไม่ออก | ชื่อ key บอกชัด |
+
+ตั้งชื่อไฟล์และชื่อ key ให้บอก **ระบบ + โปรเจกต์** เช่น `codemagic_projecta`, `codemagic_projectb`, `server_projecta` (เครื่องเซิร์ฟเวอร์ที่ดึงโค้ด) และ key ส่วนตัวให้บอก **คน + เครื่อง** เช่น `somchai-laptop` คนหนึ่งใช้ key ส่วนตัวอันเดียวกับทุก repo ที่บัญชีตัวเองมีสิทธิ์ได้ เพราะสิทธิ์ผูกกับบัญชี Gitea ของคนนั้นอยู่แล้ว
+
+**ตรวจว่าไฟล์ key ไหนเป็นของอะไร** (Windows PowerShell):
+
+```powershell
+ssh-keygen -lf ชื่อไฟล์key.pub
+```
+
+ท้ายบรรทัดจะแสดงคำอธิบายที่ตั้งตอนสร้าง (`-C`) และค่า `SHA256:` ที่ตรงกับที่ Gitea แสดงในหน้า SSH / GPG Keys หรือ Deploy Keys ใช้จับคู่ว่าไฟล์ไหนคือ key ไหนในเว็บ
+
+### 15.9 ระบบที่ใส่ SSH key ไม่ได้: user แยก + token (HTTPS)
+
+บางระบบรับแค่ URL แบบ HTTPS กับ username/password เช่น หน้า **Add URL manually** ของ Codemagic **ห้ามใส่บัญชีของคนในทีม** โดยเฉพาะบัญชี admin เพราะระบบนั้นจะได้สิทธิ์ทุกอย่างของบัญชีนั้น ให้สร้าง user แยกต่อระบบแทน
+
+1. **สร้าง user ของระบบ:** บัญชี admin → **Site Administration** → **User Accounts** → **Create User Account**
+   - ตั้งชื่อตามระบบ เช่น `codemagic`
+   - อีเมลที่ไม่ซ้ำ (ไม่ต้องมีอยู่จริง)
+   - รหัสผ่านสุ่มยาว เก็บใน password manager
+   - เอาติ๊ก "Require user to change password" ออก
+2. **ให้สิทธิ์เฉพาะ repo ที่ต้องใช้:** หน้า repo → **Settings** → **Collaborators** → เพิ่ม user นั้น สิทธิ์ **Read**
+3. **สร้าง token (แนะนำ):** ล็อกอินเป็น user นั้นในหน้าต่าง Incognito → **Settings** → **Applications** → **Generate New Token**
+   - **Repository and Organization Access:** All (user นี้เห็นแค่ repo ที่เพิ่มเป็น collaborator อยู่แล้ว)
+   - **Permissions:** repository = **Read** อย่างเดียว
+   - คัดลอก token ทันที (แสดงครั้งเดียว) เก็บใน password manager
+4. **ใส่ในระบบ:**
+   - URL แบบ HTTPS: `https://git.example.com/YOUR_ORG/YOUR_REPO.git`
+   - Username: ชื่อ user ของระบบ
+   - Password: token
+
+**ใช้ token แทนรหัสผ่านของ user นั้นได้ดีกว่า เพราะ:**
+- token ล็อกอินหน้าเว็บไม่ได้ และเปลี่ยนค่าบัญชีไม่ได้
+- ยกเลิกได้โดยลบ token อันเดียว
+
+ใช้รหัสผ่านสุ่มยาวของ user นั้นแทนได้ ความเสี่ยงต่ำเพราะ user มีสิทธิ์อ่าน repo เดียว แต่ควรเปลี่ยนเป็น token เมื่อสะดวก
+
+**ถ้าระบบขึ้นว่า `Repository not found`:** ส่วนใหญ่คือ user ยังไม่ได้เป็น collaborator ของ repo หรือ token ไม่มีสิทธิ์ repository Read เพราะ Gitea ตอบ "not found" แทน "ไม่มีสิทธิ์" สำหรับ private repo เพื่อไม่ให้คนนอกรู้ว่ามี repo นั้นอยู่
+
+**เลิกใช้ระบบ:** ลบ token หรือปิดใช้งาน user ของระบบนั้นใน Site Administration
+
+อ้างอิง: [Gitea: คำสั่ง command line (regenerate keys)](https://docs.gitea.com/administration/command-line)
+
+ขั้น 15.1–15.5 ด้วย deploy key ทดสอบกับเครื่องจริงผ่านแล้ว (10 ตุลาคม 2026) ส่วน key ส่วนตัวและข้อ 15.6 เขียนตามเอกสารของ Gitea และ OpenSSH
